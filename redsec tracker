@@ -1,0 +1,675 @@
+import { useState, useEffect, useCallback } from "react";
+import {
+  Search, Radar, Trophy, Shield, MessageCircle, Crosshair, Target, Skull,
+  Activity, Loader2, TriangleAlert, X, Users, Lock, Copy, Check, LogOut, KeyRound, Globe,
+} from "lucide-react";
+
+// Direct calls to gametools.network are being CORS-blocked in-browser.
+// Once you've deployed cloudflare-worker.js or node-proxy/server.js, replace
+// this with your proxy's URL (no trailing slash), e.g.:
+//   "https://redsec-proxy.yourname.workers.dev"
+//   "https://your-proxy.onrender.com"
+const API_BASE = "https://cloudflare-worker.juniorgraham118.workers.dev/";
+const PLATFORMS = [
+  { id: "pc", label: "PC" },
+  { id: "xbsx", label: "XBOX" },
+  { id: "ps5", label: "PSN" },
+];
+
+function genCode(len, charset = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789") {
+  let out = "";
+  for (let i = 0; i < len; i++) out += charset[Math.floor(Math.random() * charset.length)];
+  return out;
+}
+function formatCode(code) {
+  return code.length === 8 ? `${code.slice(0, 4)}-${code.slice(4)}` : code;
+}
+
+function CopyField({ label, value, mono = true }) {
+  const [copied, setCopied] = useState(false);
+  return (
+    <div className="border border-slate-700 bg-slate-900/60 p-3">
+      <div className="text-slate-500 font-mono text-[10px] tracking-[0.2em] mb-1">{label}</div>
+      <div className="flex items-center justify-between gap-2">
+        <span className={`text-white text-lg ${mono ? "font-mono" : "font-display"}`}>{value}</span>
+        <button
+          onClick={async () => {
+            try {
+              await navigator.clipboard.writeText(value);
+              setCopied(true);
+              setTimeout(() => setCopied(false), 1500);
+            } catch (e) {}
+          }}
+          className="text-cyan-400 hover:text-cyan-300 shrink-0"
+        >
+          {copied ? <Check size={16} /> : <Copy size={16} />}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ icon: Icon, label, value, accent }) {
+  return (
+    <div className="relative border border-slate-700/60 bg-slate-900/60 p-4 overflow-hidden">
+      <div className={`absolute -right-4 -top-4 h-16 w-16 rounded-full blur-2xl opacity-20 ${accent}`} />
+      <div className="flex items-center gap-2 text-slate-400 text-[11px] tracking-[0.2em] uppercase font-mono mb-2">
+        <Icon size={13} />
+        {label}
+      </div>
+      <div className="font-display text-3xl text-white tabular-nums">{value}</div>
+    </div>
+  );
+}
+
+function ScanlinePanel({ children, active }) {
+  return (
+    <div className="relative border border-cyan-500/20 bg-slate-950/80">
+      {active && (
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="absolute left-0 w-full h-px bg-cyan-400/70 shadow-[0_0_12px_2px_rgba(34,211,238,0.6)] animate-scan" />
+        </div>
+      )}
+      {children}
+    </div>
+  );
+}
+
+function statFromApi(data) {
+  const kills = data.kills ?? 0;
+  const deaths = data.deaths ?? 0;
+  const kd = data.killDeath ?? (deaths > 0 ? +(kills / deaths).toFixed(2) : kills || 0);
+  return {
+    name: data.userName,
+    kills,
+    deaths,
+    kd,
+    wins: data.wins ?? data.roundsWon ?? 0,
+    matches: data.roundsPlayed ?? data.matchesPlayed ?? 0,
+  };
+}
+
+/* ---------- Stat lookup + submit, reused by both tabs ---------- */
+function StatLookup({ onSubmit, submitLabel }) {
+  const [name, setName] = useState("");
+  const [platform, setPlatform] = useState("pc");
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [player, setPlayer] = useState(null);
+
+  async function handleSearch(e) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    setLoading(true);
+    setError(null);
+    setPlayer(null);
+    const url = `${API_BASE}/bf6/stats/?name=${encodeURIComponent(name.trim())}&platform=${platform}&skip_battlelog=true`;
+    try {
+      const res = await fetch(url);
+      const raw = await res.text();
+      let data = null;
+      try { data = JSON.parse(raw); } catch (e) {}
+
+      if (!res.ok) {
+        setError(`HTTP ${res.status} from the API. Response: ${raw.slice(0, 200) || "(empty body)"}`);
+        setLoading(false);
+        return;
+      }
+      if (!data || data.errors || !data.userName) {
+        setError(`API responded but didn't return a player. Raw response: ${raw.slice(0, 200) || "(empty body)"}`);
+        setLoading(false);
+        return;
+      }
+      setPlayer(statFromApi(data));
+    } catch (err) {
+      // A TypeError with no status here almost always means the browser blocked
+      // the request before it got a response — usually CORS, sometimes a network block.
+      setError(
+        `Request failed before any response came back (${err.name}: ${err.message}). This pattern usually means the browser blocked the request — most likely CORS on api.gametools.network, or a network/ad-blocker issue. Requested: ${url}`
+      );
+    }
+    setLoading(false);
+  }
+
+  return (
+    <div>
+      <form onSubmit={handleSearch} className="flex flex-col sm:flex-row gap-2 mb-6">
+        <div className="flex items-center gap-2 border border-slate-700 bg-slate-900/60 px-3 py-2 flex-1">
+          <Search size={15} className="text-slate-500 shrink-0" />
+          <input
+            value={name}
+            onChange={(e) => setName(e.target.value)}
+            placeholder="exact in-game name, case sensitive"
+            className="bg-transparent outline-none text-sm w-full placeholder:text-slate-600 font-mono"
+          />
+        </div>
+        <select
+          value={platform}
+          onChange={(e) => setPlatform(e.target.value)}
+          className="border border-slate-700 bg-slate-900/60 px-3 py-2 text-sm font-mono outline-none"
+        >
+          {PLATFORMS.map((p) => (
+            <option key={p.id} value={p.id}>{p.label}</option>
+          ))}
+        </select>
+        <button
+          type="submit"
+          disabled={loading}
+          className="bg-cyan-400 text-slate-950 font-display text-sm px-5 py-2.5 hover:bg-cyan-300 transition-colors disabled:opacity-50 flex items-center justify-center gap-2"
+        >
+          {loading ? <Loader2 size={15} className="animate-spin" /> : <Target size={15} />}
+          PULL STATS
+        </button>
+      </form>
+
+      {error && (
+        <div className="flex items-start gap-2 border border-amber-500/30 bg-amber-500/5 text-amber-300 text-sm p-3 mb-6 font-mono">
+          <TriangleAlert size={15} className="shrink-0 mt-0.5" />
+          {error}
+        </div>
+      )}
+
+      <ScanlinePanel active={loading}>
+        {player ? (
+          <div className="p-6">
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <div className="text-slate-500 font-mono text-xs tracking-[0.2em] mb-1">CALLSIGN</div>
+                <div className="font-display text-2xl text-white">{player.name}</div>
+              </div>
+              <button
+                onClick={() => onSubmit({ ...player, platform })}
+                className="border border-cyan-500/40 text-cyan-300 text-xs px-3 py-1.5 hover:bg-cyan-500/10 transition-colors font-mono flex items-center gap-1.5"
+              >
+                <Trophy size={13} />
+                {submitLabel}
+              </button>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+              <StatCard icon={Skull} label="Kills" value={player.kills} accent="bg-cyan-400" />
+              <StatCard icon={Activity} label="K/D" value={player.kd} accent="bg-cyan-400" />
+              <StatCard icon={Trophy} label="Wins" value={player.wins} accent="bg-amber-400" />
+              <StatCard icon={Shield} label="Matches" value={player.matches} accent="bg-amber-400" />
+            </div>
+          </div>
+        ) : (
+          <div className="p-10 text-center text-slate-600 font-mono text-sm">
+            {loading ? "PINGING GAMETOOLS.NETWORK…" : "NO DATA PULLED YET"}
+          </div>
+        )}
+      </ScanlinePanel>
+    </div>
+  );
+}
+
+/* ---------- Global leaderboard tab ---------- */
+function GlobalBoard() {
+  const [board, setBoard] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [toast, setToast] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await window.storage.list("global:", true);
+      const entries = [];
+      if (list?.keys) {
+        for (const k of list.keys) {
+          try {
+            const res = await window.storage.get(k, true);
+            if (res?.value) entries.push(JSON.parse(res.value));
+          } catch (e) {}
+        }
+      }
+      entries.sort((a, b) => (b.kd || 0) - (a.kd || 0));
+      setBoard(entries);
+    } catch (e) {
+      setBoard([]);
+    }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleAdd(stat) {
+    const entry = { ...stat, groupName: "Unaffiliated", updated: new Date().toISOString() };
+    try {
+      await window.storage.set(`global:${entry.name}-${entry.platform}`, JSON.stringify(entry), true);
+      setToast("Added to the global board.");
+      setTimeout(() => setToast(null), 2000);
+      load();
+    } catch (e) {}
+  }
+
+  return (
+    <div>
+      <div className="flex items-center gap-2 mb-1 text-slate-500 font-mono text-xs tracking-[0.2em]">
+        <Globe size={13} />
+        PUBLIC — VISIBLE TO EVERYONE
+      </div>
+      <h2 className="font-display text-2xl text-white mb-6">GLOBAL LEADERBOARD</h2>
+
+      <StatLookup onSubmit={handleAdd} submitLabel="ADD TO GLOBAL BOARD" />
+
+      {toast && (
+        <div className="mt-4 text-cyan-300 text-sm font-mono flex items-center gap-2">
+          <Check size={14} /> {toast}
+        </div>
+      )}
+
+      <div className="mt-8">
+        {loading ? (
+          <div className="text-slate-600 font-mono text-sm">LOADING BOARD…</div>
+        ) : board.length === 0 ? (
+          <div className="border border-slate-800 p-8 text-center text-slate-600 font-mono text-sm">
+            NO ENTRIES YET
+          </div>
+        ) : (
+          <div className="border border-slate-800 divide-y divide-slate-800">
+            {board.map((entry, i) => (
+              <div key={entry.name + entry.platform} className="flex items-center gap-4 px-4 py-3">
+                <div className="font-mono text-slate-600 text-sm w-6">{i + 1}</div>
+                <div className="flex-1">
+                  <div className="text-white text-sm font-medium">{entry.name}</div>
+                  <div className="text-slate-500 text-xs font-mono uppercase">
+                    {entry.platform} · {entry.groupName}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="text-cyan-400 font-display text-lg">{entry.kd}</div>
+                  <div className="text-slate-600 text-[10px] font-mono tracking-widest">K/D</div>
+                </div>
+                <div className="text-right w-16">
+                  <div className="text-amber-400 font-display text-lg">{entry.wins}</div>
+                  <div className="text-slate-600 text-[10px] font-mono tracking-widest">WINS</div>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/* ---------- Group setup (create / join) ---------- */
+function GroupSetup({ onEnter }) {
+  const [mode, setMode] = useState(null); // 'create' | 'join'
+  const [groupName, setGroupName] = useState("");
+  const [discordLink, setDiscordLink] = useState("");
+  const [created, setCreated] = useState(null);
+  const [joinCode, setJoinCode] = useState("");
+  const [joinError, setJoinError] = useState(null);
+  const [busy, setBusy] = useState(false);
+
+  async function handleCreate(e) {
+    e.preventDefault();
+    if (!groupName.trim()) return;
+    setBusy(true);
+    const code = genCode(8);
+    const adminKey = genCode(10, "abcdefghijkmnopqrstuvwxyz23456789");
+    const record = { code, name: groupName.trim(), discordLink: discordLink.trim(), adminKey, createdAt: new Date().toISOString() };
+    try {
+      await window.storage.set(`group:${code}`, JSON.stringify(record), true);
+      setCreated(record);
+    } catch (e) {
+      setJoinError("Couldn't create the group. Try again.");
+    }
+    setBusy(false);
+  }
+
+  async function handleJoin(e) {
+    e.preventDefault();
+    const clean = joinCode.replace(/[^A-Za-z0-9]/g, "").toUpperCase();
+    if (!clean) return;
+    setBusy(true);
+    setJoinError(null);
+    try {
+      const res = await window.storage.get(`group:${clean}`, true);
+      const record = JSON.parse(res.value);
+      onEnter(record, null);
+    } catch (e) {
+      setJoinError("No group found for that code. Double check it with your admin.");
+    }
+    setBusy(false);
+  }
+
+  if (created) {
+    return (
+      <div className="border border-cyan-500/30 bg-cyan-500/5 p-6 max-w-lg">
+        <div className="flex items-center gap-2 text-cyan-300 font-mono text-xs tracking-[0.2em] mb-4">
+          <Check size={14} /> GROUP CREATED
+        </div>
+        <p className="text-slate-300 text-sm mb-5">
+          Share the <span className="text-white">group code</span> in your Discord — anyone with it can
+          view and add to this group's board. Keep the <span className="text-white">admin key</span> for
+          yourself only; it's needed to remove members later.
+        </p>
+        <div className="space-y-3 mb-5">
+          <CopyField label="GROUP CODE — share with your members" value={formatCode(created.code)} />
+          <CopyField label="ADMIN KEY — keep private, yours only" value={created.adminKey} />
+        </div>
+        <button
+          onClick={() => onEnter(created, created.adminKey)}
+          className="w-full bg-cyan-400 text-slate-950 font-display text-sm px-4 py-2.5 hover:bg-cyan-300 transition-colors"
+        >
+          ENTER GROUP BOARD
+        </button>
+      </div>
+    );
+  }
+
+  if (mode === "create") {
+    return (
+      <form onSubmit={handleCreate} className="border border-slate-800 p-6 max-w-lg space-y-4">
+        <button type="button" onClick={() => setMode(null)} className="text-slate-500 text-xs font-mono">&larr; BACK</button>
+        <div>
+          <label className="text-slate-500 font-mono text-[11px] tracking-[0.2em] block mb-1">GROUP / SERVER NAME</label>
+          <input
+            value={groupName}
+            onChange={(e) => setGroupName(e.target.value)}
+            placeholder="e.g. Sector One Squad"
+            className="w-full border border-slate-700 bg-slate-900/60 px-3 py-2 text-sm outline-none"
+          />
+        </div>
+        <div>
+          <label className="text-slate-500 font-mono text-[11px] tracking-[0.2em] block mb-1">DISCORD INVITE LINK (optional)</label>
+          <input
+            value={discordLink}
+            onChange={(e) => setDiscordLink(e.target.value)}
+            placeholder="https://discord.gg/..."
+            className="w-full border border-slate-700 bg-slate-900/60 px-3 py-2 text-sm outline-none font-mono"
+          />
+        </div>
+        <button
+          disabled={busy}
+          className="bg-cyan-400 text-slate-950 font-display text-sm px-5 py-2.5 hover:bg-cyan-300 transition-colors disabled:opacity-50"
+        >
+          {busy ? "CREATING…" : "CREATE GROUP"}
+        </button>
+      </form>
+    );
+  }
+
+  if (mode === "join") {
+    return (
+      <form onSubmit={handleJoin} className="border border-slate-800 p-6 max-w-lg space-y-4">
+        <button type="button" onClick={() => setMode(null)} className="text-slate-500 text-xs font-mono">&larr; BACK</button>
+        <div>
+          <label className="text-slate-500 font-mono text-[11px] tracking-[0.2em] block mb-1">GROUP CODE</label>
+          <input
+            value={joinCode}
+            onChange={(e) => setJoinCode(e.target.value)}
+            placeholder="XXXX-XXXX"
+            className="w-full border border-slate-700 bg-slate-900/60 px-3 py-2 text-sm outline-none font-mono uppercase"
+          />
+        </div>
+        {joinError && (
+          <div className="flex items-start gap-2 border border-amber-500/30 bg-amber-500/5 text-amber-300 text-sm p-3 font-mono">
+            <TriangleAlert size={15} className="shrink-0 mt-0.5" /> {joinError}
+          </div>
+        )}
+        <button
+          disabled={busy}
+          className="bg-cyan-400 text-slate-950 font-display text-sm px-5 py-2.5 hover:bg-cyan-300 transition-colors disabled:opacity-50"
+        >
+          {busy ? "CHECKING…" : "JOIN GROUP"}
+        </button>
+      </form>
+    );
+  }
+
+  return (
+    <div className="grid sm:grid-cols-2 gap-4 max-w-2xl">
+      <button
+        onClick={() => setMode("create")}
+        className="border border-slate-800 hover:border-cyan-500/40 p-6 text-left transition-colors"
+      >
+        <Shield className="text-cyan-400 mb-3" size={20} />
+        <div className="font-display text-lg text-white mb-1">SET UP A GROUP</div>
+        <div className="text-slate-500 text-sm">You're the admin for a Discord server or channel.</div>
+      </button>
+      <button
+        onClick={() => setMode("join")}
+        className="border border-slate-800 hover:border-cyan-500/40 p-6 text-left transition-colors"
+      >
+        <KeyRound className="text-cyan-400 mb-3" size={20} />
+        <div className="font-display text-lg text-white mb-1">JOIN WITH A CODE</div>
+        <div className="text-slate-500 text-sm">Your admin gave you a group code in Discord.</div>
+      </button>
+    </div>
+  );
+}
+
+/* ---------- Group dashboard (private roster) ---------- */
+function GroupDashboard({ group, adminKey, onLeave }) {
+  const [roster, setRoster] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [adminInput, setAdminInput] = useState("");
+  const [adminUnlocked, setAdminUnlocked] = useState(!!adminKey);
+  const [adminError, setAdminError] = useState(null);
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    try {
+      const list = await window.storage.list(`entry:${group.code}:`, true);
+      const entries = [];
+      if (list?.keys) {
+        for (const k of list.keys) {
+          try {
+            const res = await window.storage.get(k, true);
+            if (res?.value) entries.push(JSON.parse(res.value));
+          } catch (e) {}
+        }
+      }
+      entries.sort((a, b) => (b.kd || 0) - (a.kd || 0));
+      setRoster(entries);
+    } catch (e) {
+      setRoster([]);
+    }
+    setLoading(false);
+  }, [group.code]);
+
+  useEffect(() => { load(); }, [load]);
+
+  async function handleAdd(stat) {
+    const entry = { ...stat, updated: new Date().toISOString() };
+    try {
+      await window.storage.set(`entry:${group.code}:${entry.name}-${entry.platform}`, JSON.stringify(entry), true);
+      await window.storage.set(
+        `global:${entry.name}-${entry.platform}`,
+        JSON.stringify({ ...entry, groupName: group.name }),
+        true
+      );
+      load();
+    } catch (e) {}
+  }
+
+  async function handleRemove(entry) {
+    try {
+      await window.storage.delete(`entry:${group.code}:${entry.name}-${entry.platform}`, true);
+      load();
+    } catch (e) {}
+  }
+
+  function unlockAdmin(e) {
+    e.preventDefault();
+    if (adminInput === group.adminKey) {
+      setAdminUnlocked(true);
+      setAdminError(null);
+    } else {
+      setAdminError("That admin key doesn't match this group.");
+    }
+  }
+
+  return (
+    <div>
+      <div className="flex items-start justify-between gap-4 mb-6 flex-wrap">
+        <div>
+          <div className="flex items-center gap-2 text-slate-500 font-mono text-xs tracking-[0.2em] mb-1">
+            <Lock size={12} /> PRIVATE — GROUP CODE REQUIRED
+          </div>
+          <h2 className="font-display text-2xl text-white">{group.name}</h2>
+          {group.discordLink && (
+            <a href={group.discordLink} target="_blank" rel="noopener noreferrer" className="text-cyan-400 text-sm font-mono flex items-center gap-1 mt-1 hover:text-cyan-300">
+              <MessageCircle size={13} /> open discord
+            </a>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <div className="border border-slate-700 px-3 py-1.5 font-mono text-sm text-slate-300">{formatCode(group.code)}</div>
+          <button onClick={onLeave} className="border border-slate-700 text-slate-400 text-xs px-3 py-1.5 hover:text-white transition-colors flex items-center gap-1.5 font-mono">
+            <LogOut size={13} /> LEAVE
+          </button>
+        </div>
+      </div>
+
+      <StatLookup onSubmit={handleAdd} submitLabel="ADD TO GROUP BOARD" />
+
+      <div className="mt-8">
+        <div className="flex items-center gap-2 mb-3 text-slate-500 font-mono text-xs tracking-[0.2em]">
+          <Users size={13} /> GROUP ROSTER
+        </div>
+        {loading ? (
+          <div className="text-slate-600 font-mono text-sm">LOADING ROSTER…</div>
+        ) : roster.length === 0 ? (
+          <div className="border border-slate-800 p-8 text-center text-slate-600 font-mono text-sm">
+            NO ONE'S ADDED THEMSELVES YET
+          </div>
+        ) : (
+          <div className="border border-slate-800 divide-y divide-slate-800">
+            {roster.map((entry, i) => (
+              <div key={entry.name + entry.platform} className="flex items-center gap-4 px-4 py-3">
+                <div className="font-mono text-slate-600 text-sm w-6">{i + 1}</div>
+                <div className="flex-1">
+                  <div className="text-white text-sm font-medium">{entry.name}</div>
+                  <div className="text-slate-500 text-xs font-mono uppercase">{entry.platform}</div>
+                </div>
+                <div className="text-right">
+                  <div className="text-cyan-400 font-display text-lg">{entry.kd}</div>
+                  <div className="text-slate-600 text-[10px] font-mono tracking-widest">K/D</div>
+                </div>
+                <div className="text-right w-16">
+                  <div className="text-amber-400 font-display text-lg">{entry.wins}</div>
+                  <div className="text-slate-600 text-[10px] font-mono tracking-widest">WINS</div>
+                </div>
+                {adminUnlocked && (
+                  <button onClick={() => handleRemove(entry)} className="text-slate-600 hover:text-red-400 transition-colors">
+                    <X size={16} />
+                  </button>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {!adminUnlocked && (
+        <form onSubmit={unlockAdmin} className="mt-8 border-t border-slate-800 pt-6 flex flex-wrap items-end gap-2">
+          <div>
+            <label className="text-slate-500 font-mono text-[11px] tracking-[0.2em] block mb-1">ADMIN KEY (optional)</label>
+            <input
+              value={adminInput}
+              onChange={(e) => setAdminInput(e.target.value)}
+              placeholder="unlock admin controls"
+              className="border border-slate-700 bg-slate-900/60 px-3 py-2 text-sm outline-none font-mono"
+            />
+          </div>
+          <button className="border border-slate-700 text-slate-300 text-sm px-4 py-2 hover:border-cyan-500/40 transition-colors font-mono">
+            UNLOCK
+          </button>
+          {adminError && <div className="text-amber-300 text-xs font-mono w-full">{adminError}</div>}
+        </form>
+      )}
+    </div>
+  );
+}
+
+/* ---------- Root ---------- */
+export default function RedSecTracker() {
+  const [tab, setTab] = useState("global");
+  const [group, setGroup] = useState(null);
+  const [adminKey, setAdminKey] = useState(null);
+
+  return (
+    <div className="min-h-screen bg-[#0A0E13] text-slate-200 font-body">
+      <style>{`
+        @import url('https://fonts.googleapis.com/css2?family=Rajdhani:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500&family=JetBrains+Mono:wght@400;500&display=swap');
+        .font-display { font-family: 'Rajdhani', sans-serif; font-weight: 700; letter-spacing: 0.01em; }
+        .font-body { font-family: 'IBM Plex Sans', sans-serif; }
+        .font-mono { font-family: 'JetBrains Mono', monospace; }
+        @keyframes scan { 0% { top: -10%; } 100% { top: 110%; } }
+        .animate-scan { animation: scan 1.6s linear infinite; }
+        .grid-bg {
+          background-image: linear-gradient(rgba(56,189,248,0.06) 1px, transparent 1px),
+            linear-gradient(90deg, rgba(56,189,248,0.06) 1px, transparent 1px);
+          background-size: 40px 40px;
+        }
+        @media (prefers-reduced-motion: reduce) { .animate-scan { animation: none; } }
+      `}</style>
+
+      <nav className="border-b border-slate-800/80 sticky top-0 z-20 bg-[#0A0E13]/90 backdrop-blur">
+        <div className="max-w-5xl mx-auto px-5 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <Crosshair size={18} className="text-cyan-400" />
+            <span className="font-display text-lg text-white tracking-wide">SECTOR ONE</span>
+          </div>
+          <div className="flex gap-1 border border-slate-800 p-1">
+            <button
+              onClick={() => setTab("global")}
+              className={`px-3 py-1.5 text-xs font-mono tracking-wide transition-colors ${tab === "global" ? "bg-cyan-400 text-slate-950" : "text-slate-400 hover:text-white"}`}
+            >
+              GLOBAL
+            </button>
+            <button
+              onClick={() => setTab("group")}
+              className={`px-3 py-1.5 text-xs font-mono tracking-wide transition-colors ${tab === "group" ? "bg-cyan-400 text-slate-950" : "text-slate-400 hover:text-white"}`}
+            >
+              MY GROUP
+            </button>
+          </div>
+        </div>
+      </nav>
+
+      <header className="relative grid-bg border-b border-slate-800/80 overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-b from-transparent via-transparent to-[#0A0E13]" />
+        <div className="max-w-5xl mx-auto px-5 pt-14 pb-16 relative">
+          <div className="text-cyan-400 font-mono text-xs tracking-[0.3em] mb-4">REDSEC // BATTLE ROYALE INTEL</div>
+          <h1 className="font-display text-white text-4xl sm:text-5xl leading-[0.95] mb-4 max-w-2xl">
+            EVERY DROP. EVERY KILL. <span className="text-cyan-400">LOGGED.</span>
+          </h1>
+          <p className="text-slate-400 max-w-md">
+            One public board for everyone, plus private rosters for your own Discord — gated by a code only your admin hands out.
+          </p>
+        </div>
+      </header>
+
+      <main className="max-w-5xl mx-auto px-5 py-14">
+        {tab === "global" ? (
+          <GlobalBoard />
+        ) : group ? (
+          <GroupDashboard
+            group={group}
+            adminKey={adminKey}
+            onLeave={() => { setGroup(null); setAdminKey(null); }}
+          />
+        ) : (
+          <div>
+            <div className="flex items-center gap-2 mb-1 text-slate-500 font-mono text-xs tracking-[0.2em]">
+              <Lock size={13} /> PRIVATE
+            </div>
+            <h2 className="font-display text-2xl text-white mb-6">MY GROUP</h2>
+            <GroupSetup onEnter={(g, key) => { setGroup(g); setAdminKey(key); }} />
+          </div>
+        )}
+      </main>
+
+      <footer className="border-t border-slate-800/80 py-8">
+        <div className="max-w-5xl mx-auto px-5 text-slate-600 text-xs font-mono">
+          Stats via gametools.network. Not affiliated with EA or DICE. Group codes are access keys, not
+          verified Discord membership — don't post them outside your own server.
+        </div>
+      </footer>
+    </div>
+  );
+}
