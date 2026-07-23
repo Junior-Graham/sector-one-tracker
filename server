@@ -1,0 +1,48 @@
+// Node.js proxy — self-hosted alternative to the Cloudflare Worker.
+//
+// WHAT THIS DOES:
+// Same job as the Worker: forwards /bf6/... requests to api.gametools.network
+// server-to-server (never CORS-blocked) and adds CORS headers so a browser
+// can call this proxy directly.
+//
+// SETUP:
+//   npm install
+//   npm start
+// Runs on http://localhost:3000 by default. Deploy anywhere that runs Node
+// (Render, Railway, Fly.io, a VPS, etc.) — then point the site's API_BASE at
+// wherever this ends up living, e.g. https://your-proxy.onrender.com
+
+import express from "express";
+import cors from "cors";
+
+const app = express();
+app.use(cors());
+
+const UPSTREAM = "https://api.gametools.network";
+const ALLOWED_PREFIXES = ["/bf6/", "/bf2042/"];
+
+app.get(/.*/, async (req, res) => {
+  const isAllowed = ALLOWED_PREFIXES.some((p) => req.path.startsWith(p));
+  if (!isAllowed) {
+    return res.status(404).json({ error: "path_not_allowed" });
+  }
+
+  const queryString = req.url.includes("?") ? req.url.slice(req.url.indexOf("?")) : "";
+  const target = `${UPSTREAM}${req.path}${queryString}`;
+
+  try {
+    const upstream = await fetch(target, { headers: { Accept: "application/json" } });
+    const body = await upstream.text();
+    res
+      .status(upstream.status)
+      .type(upstream.headers.get("content-type") || "application/json")
+      .send(body);
+  } catch (err) {
+    res.status(502).json({ error: "proxy_fetch_failed", message: String(err) });
+  }
+});
+
+const PORT = process.env.PORT || 3000;
+app.listen(PORT, () => {
+  console.log(`Proxy listening on http://localhost:${PORT}`);
+});
