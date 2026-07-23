@@ -1,0 +1,65 @@
+// Cloudflare Worker — free-tier proxy for api.gametools.network
+//
+// WHAT THIS DOES:
+// Forwards any request under /bf6/... to https://api.gametools.network/bf6/...
+// and adds CORS headers to the response, so a browser-based site can call it
+// directly. CORS only restricts browser JS — this Worker calls gametools
+// server-to-server, which is never blocked by CORS.
+//
+// DEPLOY:
+// 1. Go to https://dash.cloudflare.com -> Workers & Pages -> Create -> Worker
+// 2. Delete the placeholder code, paste this file's contents in, click Deploy
+// 3. You'll get a URL like https://redsec-proxy.<your-subdomain>.workers.dev
+// 4. In the site's config, set API_BASE to that URL (no trailing slash)
+//
+// Free tier: 100,000 requests/day, no credit card required.
+
+const UPSTREAM = "https://api.gametools.network";
+
+function corsHeaders() {
+  return {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, OPTIONS",
+    "Access-Control-Allow-Headers": "Content-Type",
+  };
+}
+
+export default {
+  async fetch(request) {
+    const url = new URL(request.url);
+
+    // Preflight
+    if (request.method === "OPTIONS") {
+      return new Response(null, { headers: corsHeaders() });
+    }
+
+    // Only proxy Battlefield API paths — don't turn this into an open relay
+    if (!url.pathname.startsWith("/bf6/") && !url.pathname.startsWith("/bf2042/")) {
+      return new Response(JSON.stringify({ error: "path_not_allowed" }), {
+        status: 404,
+        headers: { ...corsHeaders(), "Content-Type": "application/json" },
+      });
+    }
+
+    const target = `${UPSTREAM}${url.pathname}${url.search}`;
+
+    try {
+      const upstream = await fetch(target, {
+        headers: { Accept: "application/json" },
+      });
+      const body = await upstream.text();
+      return new Response(body, {
+        status: upstream.status,
+        headers: {
+          ...corsHeaders(),
+          "Content-Type": upstream.headers.get("Content-Type") || "application/json",
+        },
+      });
+    } catch (err) {
+      return new Response(
+        JSON.stringify({ error: "proxy_fetch_failed", message: String(err) }),
+        { status: 502, headers: { ...corsHeaders(), "Content-Type": "application/json" } }
+      );
+    }
+  },
+};
